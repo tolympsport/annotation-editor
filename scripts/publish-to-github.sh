@@ -15,7 +15,7 @@
 #
 # Danach in der Host-App (z. B. Modulo-CAD) installieren:
 #   "dependencies": {
-#     "@tolympsport/annotation-editor": "github:tolympsport/annotation-editor#v1.0.0"
+#     "@tolymp/annotation-editor": "github:tolympsport/annotation-editor#v1.0.0"
 #   }
 # Beim Install baut das `prepare`-Script automatisch dist/ (ESM, d.ts, styles.css).
 
@@ -58,7 +58,7 @@ Fertig. Installation in der Host-App verifizieren:
 
   mkdir -p /tmp/ae-verify && cd /tmp/ae-verify && npm init -y
   npm install "github:tolympsport/annotation-editor#$VERSION"
-  ls node_modules/@tolympsport/annotation-editor/dist   # index.js, tiptap.js, *.d.ts, styles.css
+  ls node_modules/@tolymp/annotation-editor/dist   # index.js, tiptap.js, *.d.ts, styles.css
 
 Für ein neues Release: Version in $PREFIX/package.json erhöhen,
 committen und dieses Script erneut ausführen.
