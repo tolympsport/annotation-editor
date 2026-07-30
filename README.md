@@ -7,6 +7,30 @@ Eigenständiges React-Paket mit zwei Entry-Points:
 
 Das Paket hat keine Abhängigkeiten zu shadcn/ui, zur Tailwind-Konfiguration einer Host-App, zu Auth oder Backend-Routen. Alle App-spezifischen Belange (Upload, Benachrichtigungen, Hilfe-Assets) laufen über Callbacks/Props.
 
+## Veröffentlichung in ein eigenes GitHub-Repo
+
+Das Paket lebt im Workspace-Monorepo unter `packages/annotation-editor/`. Um es als GitHub-Dependency nutzbar zu machen, wird der Ordner (inkl. Historie) per `git subtree split` in ein eigenes Repo übertragen und die Version aus `package.json` getaggt:
+
+```bash
+# Einmalig: leeres Repo github.com/tolymp/annotation-editor anlegen (ohne README)
+# Dann im Root des Workspace-Repos:
+./packages/annotation-editor/scripts/publish-to-github.sh
+# oder mit anderer Remote-URL:
+./packages/annotation-editor/scripts/publish-to-github.sh https://github.com/tolymp/annotation-editor.git
+```
+
+Das Script pusht den Split-Branch als `main`, taggt `v<version>` und pusht den Tag. `dist/` wird **nicht** committet — beim Install aus Git baut das `prepare`-Script das Paket automatisch (Vite-Build, `d.ts`, `styles.css`).
+
+Neues Release: Version in `package.json` erhöhen, committen, Script erneut ausführen.
+
+Verifikation nach dem Publish:
+
+```bash
+mkdir -p /tmp/ae-verify && cd /tmp/ae-verify && npm init -y
+npm install "github:tolymp/annotation-editor#v1.0.0"
+ls node_modules/@tolymp/annotation-editor/dist   # index.js, tiptap.js, *.d.ts, styles.css
+```
+
 ## Installation
 
 Als GitHub-Dependency (nach Veröffentlichung in ein eigenes Repo):
