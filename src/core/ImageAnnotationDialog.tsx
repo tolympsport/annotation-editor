@@ -26,7 +26,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { cn } from "../lib/utils";
-import { ArrowRight, ArrowLeft, ArrowUp, ArrowDown, Circle, Square, Type, MousePointer, Trash2, Undo2, Redo2, PenLine, Pencil, Minimize2, PaintBucket, Copy, Bold, Italic, Underline, Strikethrough, Minus, ZoomIn, ZoomOut, Maximize2, Crop, HelpCircle, ImagePlus } from "lucide-react";
+import { ArrowRight, ArrowLeft, ArrowUp, ArrowDown, Circle, Square, Type, MousePointer, Trash2, Undo2, Redo2, PenLine, Pencil, PaintBucket, Copy, Bold, Italic, Underline, Strikethrough, Minus, ZoomIn, ZoomOut, Maximize2, Crop, HelpCircle, ImagePlus } from "lucide-react";
 import { AnnotationHelpDialog, type AnnotationHelpAssets } from "./AnnotationHelpDialog";
 
 // ─── Annotation types (public, versioned schema) ────────────────────────────
@@ -1390,7 +1390,6 @@ export function ImageAnnotationDialog({
 
   // ── Canvas expand ─────────────────────────────────────────────────────────────
 
-  const hasPadding = canvasOffsetX > 0 || canvasOffsetY > 0 || canvasPaddingRight > 0 || canvasPaddingBottom > 0;
 
   function addPadding(side: "left" | "top" | "right" | "bottom") {
     const px = expandPx;
@@ -1405,14 +1404,6 @@ export function ImageAnnotationDialog({
     } else {
       setCanvasPaddingBottom(prev => prev + px);
     }
-  }
-
-  function resetPadding() {
-    setAnnotations(prev => prev.map(ann => shiftAnnotation(ann, -canvasOffsetX, -canvasOffsetY)));
-    setCanvasOffsetX(0);
-    setCanvasOffsetY(0);
-    setCanvasPaddingRight(0);
-    setCanvasPaddingBottom(0);
   }
 
   /** Shrink the canvas to the tightest rect that encloses the image and every annotation. */
@@ -2759,10 +2750,6 @@ export function ImageAnnotationDialog({
               </div>
               <button type="button" title="Leinwand auf Inhalt zuschneiden" onClick={trimCanvas} className="h-7 w-7 flex items-center justify-center rounded transition-colors border hover:bg-muted cursor-pointer">
                 <Crop className="h-3.5 w-3.5" />
-              </button>
-              <button type="button" title="Hinzugefügten Rand zurücksetzen" onClick={resetPadding}
-                className={cn("h-7 w-7 flex items-center justify-center rounded transition-colors border", hasPadding ? "text-destructive border-destructive/30 hover:bg-destructive/10 cursor-pointer" : "invisible pointer-events-none")}>
-                <Minimize2 className="h-3.5 w-3.5" />
               </button>
             </div>
 
