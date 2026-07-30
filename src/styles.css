@@ -1,0 +1,37 @@
+/*
+ * @tolymp/annotation-editor/styles.css
+ *
+ * Standalone stylesheet for host apps that do NOT run Tailwind over this
+ * package's sources. Ships the utility classes used by the components plus
+ * low-specificity default design tokens (`:where(:root)`), so a host app's
+ * own token definitions always win.
+ *
+ * Hosts that already run Tailwind (v3, shadcn-style tokens) can skip this
+ * file and instead add the package sources to their Tailwind `content` glob.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:where(:root) {
+  --background: 0 0% 100%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --primary: 217 91% 60%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 210 40% 96%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 214 32% 91%;
+  --input: 214 32% 91%;
+  --ring: 217 91% 60%;
+  --radius: 0.5rem;
+}
