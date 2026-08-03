@@ -5,6 +5,8 @@
  * image in → onSave(blob, annotations, canvasOffsets) out.
  */
 export { ImageAnnotationDialog } from "./core/ImageAnnotationDialog";
+export { PhotoInboxDialog, type PhotoInboxDialogProps } from "./photo-inbox/PhotoInboxDialog";
+export type { PhotoInboxItemDto } from "./photo-inbox/types";
 export { AnnotationHelpDialog, type AnnotationHelpAssets, type HelpTab } from "./core/AnnotationHelpDialog";
 export {
   ANNOTATION_SCHEMA_VERSION,

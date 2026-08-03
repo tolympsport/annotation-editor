@@ -4,8 +4,13 @@
   "description": "Image annotation dialog and TipTap rich-text editor with annotatable, resizable images",
   "license": "MIT",
   "type": "module",
-  "sideEffects": ["**/*.css"],
-  "files": ["dist", "README.md"],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -37,13 +42,27 @@
     "react-dom": "^18.0.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
-    "@tiptap/core": { "optional": true },
-    "@tiptap/extension-link": { "optional": true },
-    "@tiptap/extension-placeholder": { "optional": true },
-    "@tiptap/extension-text-align": { "optional": true },
-    "@tiptap/extension-underline": { "optional": true },
-    "@tiptap/react": { "optional": true },
-    "@tiptap/starter-kit": { "optional": true }
+    "@tiptap/core": {
+      "optional": true
+    },
+    "@tiptap/extension-link": {
+      "optional": true
+    },
+    "@tiptap/extension-placeholder": {
+      "optional": true
+    },
+    "@tiptap/extension-text-align": {
+      "optional": true
+    },
+    "@tiptap/extension-underline": {
+      "optional": true
+    },
+    "@tiptap/react": {
+      "optional": true
+    },
+    "@tiptap/starter-kit": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.7",
@@ -54,6 +73,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.453.0",
+    "qrcode.react": "^4.2.0",
     "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {
