@@ -2902,10 +2902,14 @@ export function ImageAnnotationDialog({
           // already in select mode with selection → deselect first
           setSelectedIndex(null);
         } else {
-          // nothing selected, nothing active → close the editor
-          // stopPropagation prevents the ESC from reaching parent dialogs
-          e.stopPropagation();
-          requestCloseRef.current?.();
+          // nothing selected, nothing active → close the editor.
+          // Defer past the current event-dispatch cycle: Radix's DismissableLayer
+          // for parent dialogs (e.g. a wrapping MH dialog) fires during the same
+          // keydown event. As long as the AE is still in Radix's layer stack when
+          // the event is processed, Radix correctly skips the parent layer.
+          // Calling onClose() synchronously would unmount the AE mid-event, making
+          // the parent dialog the new topmost layer — causing it to close too.
+          setTimeout(() => requestCloseRef.current?.(), 0);
         }
       }
 
