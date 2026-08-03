@@ -210,6 +210,12 @@ function renderAnnotation(
     ctx.lineTo(ann.x2, ann.y2);
     ctx.stroke();
   } else if (ann.kind === "circle") {
+    if ((ann.shadowBlur ?? 0) > 0) {
+      ctx.shadowBlur    = ann.shadowBlur!;
+      ctx.shadowColor   = ann.shadowColor ?? "rgba(0,0,0,0.5)";
+      ctx.shadowOffsetX = ann.shadowOffsetX ?? 4;
+      ctx.shadowOffsetY = ann.shadowOffsetY ?? 4;
+    }
     ctx.strokeStyle = ann.color;
     ctx.lineWidth = ann.lineWidth;
     ctx.beginPath();
@@ -224,6 +230,12 @@ function renderAnnotation(
     }
     ctx.stroke();
   } else if (ann.kind === "ellipse") {
+    if ((ann.shadowBlur ?? 0) > 0) {
+      ctx.shadowBlur    = ann.shadowBlur!;
+      ctx.shadowColor   = ann.shadowColor ?? "rgba(0,0,0,0.5)";
+      ctx.shadowOffsetX = ann.shadowOffsetX ?? 4;
+      ctx.shadowOffsetY = ann.shadowOffsetY ?? 4;
+    }
     ctx.strokeStyle = ann.color;
     ctx.lineWidth = ann.lineWidth;
     ctx.beginPath();
@@ -246,6 +258,12 @@ function renderAnnotation(
       ctx.translate(rcx, rcy);
       ctx.rotate(rot);
       ctx.translate(-rcx, -rcy);
+    }
+    if ((ann.shadowBlur ?? 0) > 0) {
+      ctx.shadowBlur    = ann.shadowBlur!;
+      ctx.shadowColor   = ann.shadowColor ?? "rgba(0,0,0,0.5)";
+      ctx.shadowOffsetX = ann.shadowOffsetX ?? 4;
+      ctx.shadowOffsetY = ann.shadowOffsetY ?? 4;
     }
     const rectAlpha = effectiveFillAlpha(ann);
     if (rectAlpha > 0) {
@@ -2559,6 +2577,20 @@ export function ImageAnnotationDialog({
       }
       return;
     }
+    if (ann.kind === "circle" || ann.kind === "ellipse" || ann.kind === "rect") {
+      const hasShadow = (ann.shadowBlur ?? 0) > 0;
+      setImgShadowOn(hasShadow);
+      setImgShadowBlur(ann.shadowBlur ?? 8);
+      setImgShadowX(ann.shadowOffsetX ?? 4);
+      setImgShadowY(ann.shadowOffsetY ?? 4);
+      const sc = ann.shadowColor ?? "rgba(0,0,0,0.5)";
+      const m = sc.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      if (m) {
+        const toHex = (n: string) => parseInt(n).toString(16).padStart(2, "0");
+        setImgShadowColor(`#${toHex(m[1])}${toHex(m[2])}${toHex(m[3])}`);
+        setImgShadowAlpha(Math.round(parseFloat(m[4] ?? "1") * 100));
+      }
+    }
     setColor(ann.color);
     if ("lineWidth" in ann) setLineWidth((ann as ArrowAnnotation | CircleAnnotation).lineWidth);
     if (ann.kind === "text") {
@@ -2847,7 +2879,7 @@ export function ImageAnnotationDialog({
         }
       }
 
-      // Escape: if in a drawing/text tool → back to select; otherwise deselect
+      // Escape: if in a drawing/text tool → back to select; otherwise deselect; finally close
       if (e.key === "Escape") {
         e.preventDefault();
         if (textInputRef.current === document.activeElement) {
@@ -2866,9 +2898,12 @@ export function ImageAnnotationDialog({
           setTool("select");
           setPreview(null);
           dragRef.current = null;
-        } else {
-          // already in select mode → deselect
+        } else if (selectedIndicesRef.current.length > 0) {
+          // already in select mode with selection → deselect first
           setSelectedIndex(null);
+        } else {
+          // nothing selected, nothing active → close the editor
+          requestCloseRef.current?.();
         }
       }
 
@@ -2908,6 +2943,9 @@ export function ImageAnnotationDialog({
   // Stable ref so keyboard handler closure can call applyCrop without stale closure
   const applyCropRef = useRef<(() => void) | null>(null);
   useEffect(() => { applyCropRef.current = applyCrop; });
+  // Stable ref so keyboard handler closure can call requestClose without stale closure
+  const requestCloseRef = useRef<(() => void) | null>(null);
+  useEffect(() => { requestCloseRef.current = requestClose; });
 
   // ── Image insertion (Paste / Drag-Drop / File-Button) ───────────────────────
 
@@ -3278,6 +3316,7 @@ export function ImageAnnotationDialog({
             const ann = selectedIndex != null ? annotations[selectedIndex] : null;
             const isImage = ann?.kind === "image";
             const isTextAnn = ann?.kind === "text";
+            const isShapeAnn = ann?.kind === "circle" || ann?.kind === "ellipse" || ann?.kind === "rect";
             const textVisible = tool === "text" || isTextAnn;
             const FILL_KINDS = new Set(["circle", "ellipse", "rect"]);
             const fillApplicable = FILL_KINDS.has(tool) || selectedIndices.some(i => FILL_KINDS.has(annotations[i]?.kind));
@@ -3386,6 +3425,61 @@ export function ImageAnnotationDialog({
                       className={cn("w-10 text-xs text-right tabular-nums bg-transparent border-0 outline-none focus:ring-1 focus:ring-primary rounded px-0.5 text-muted-foreground", fillOpacity === 0 && "opacity-40")} />
                     <span className="text-xs text-muted-foreground select-none -ml-1">%</span>
                   </div>
+
+                  {/* ── Shape shadow (circle / ellipse / rect) ── */}
+                  {isShapeAnn && (<>
+                    <div className="w-px h-5 bg-border shrink-0" />
+
+                    {/* Schatten toggle */}
+                    <button type="button" title={imgShadowOn ? "Schatten deaktivieren" : "Schatten aktivieren"}
+                      onClick={() => {
+                        const next = !imgShadowOn; setImgShadowOn(next);
+                        updateSelected({ shadowBlur: next ? imgShadowBlur : 0, shadowColor: next ? shadowRgba : undefined, shadowOffsetX: next ? imgShadowX : undefined, shadowOffsetY: next ? imgShadowY : undefined });
+                      }}
+                      className={cn("h-7 w-7 flex items-center justify-center rounded border shrink-0 transition-colors",
+                        imgShadowOn ? "bg-primary text-primary-foreground border-primary" : "hover:bg-muted text-muted-foreground")}>
+                      <svg viewBox="0 0 16 16" className="h-4 w-4" fill="currentColor">
+                        <rect x="1" y="3" width="10" height="10" rx="1" opacity="0.3"/>
+                        <rect x="0" y="2" width="10" height="10" rx="1" fill="none" stroke="currentColor" strokeWidth="1.5"/>
+                      </svg>
+                    </button>
+
+                    {imgShadowOn && (<>
+                      <SliderNum label="Unschärfe" min={0} max={40} value={imgShadowBlur}
+                        onChange={(v) => { setImgShadowBlur(v); updateSelected({ shadowBlur: v, shadowColor: shadowRgba }); }} />
+                      <div className="flex items-center gap-1 border rounded px-2 h-7 bg-background text-xs shrink-0" title="Schattenfarbe & Deckkraft">
+                        <input type="color" value={imgShadowColor}
+                          onChange={(e) => {
+                            setImgShadowColor(e.target.value);
+                            const hex = e.target.value.replace("#","");
+                            const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
+                            updateSelected({ shadowColor: `rgba(${r},${g},${b},${(imgShadowAlpha/100).toFixed(2)})` });
+                          }}
+                          className="h-5 w-5 rounded border cursor-pointer p-0 bg-background shrink-0" title="Schattenfarbe" />
+                        <span className="text-muted-foreground select-none shrink-0">α</span>
+                        <input type="range" min={5} max={100} step={5} value={imgShadowAlpha}
+                          onChange={(e) => { const a = Number(e.target.value); setImgShadowAlpha(a); updateSelected({ shadowColor: shadowRgba }); }}
+                          className="w-10 h-1.5 accent-primary cursor-pointer" />
+                        <input type="number" min={5} max={100} step={5} value={imgShadowAlpha}
+                          onChange={(e) => { const a = Math.min(100,Math.max(5,Number(e.target.value)||5)); setImgShadowAlpha(a); updateSelected({ shadowColor: shadowRgba }); }}
+                          onWheel={(e) => { e.preventDefault(); const a = Math.min(100,Math.max(5,imgShadowAlpha+(e.deltaY<0?5:-5))); setImgShadowAlpha(a); updateSelected({ shadowColor: shadowRgba }); }}
+                          className="w-8 text-xs text-right tabular-nums bg-transparent border-0 outline-none focus:ring-1 focus:ring-primary rounded px-0.5 text-muted-foreground" />
+                        <span className="text-muted-foreground select-none -ml-1">%</span>
+                      </div>
+                      <div className="flex items-center gap-1 border rounded px-2 h-7 bg-background text-xs shrink-0" title="Schattenversatz X / Y">
+                        <span className="text-muted-foreground select-none shrink-0">X</span>
+                        <input type="number" min={-40} max={40} step={1} value={imgShadowX}
+                          onChange={(e) => { const v=Number(e.target.value); setImgShadowX(v); updateSelected({ shadowOffsetX: v }); }}
+                          onWheel={(e) => { e.preventDefault(); const v=Math.min(40,Math.max(-40,imgShadowX+(e.deltaY<0?1:-1))); setImgShadowX(v); updateSelected({ shadowOffsetX: v }); }}
+                          className="w-8 text-xs text-right tabular-nums bg-transparent border-0 outline-none focus:ring-1 focus:ring-primary rounded px-0.5 text-muted-foreground" />
+                        <span className="text-muted-foreground select-none shrink-0">Y</span>
+                        <input type="number" min={-40} max={40} step={1} value={imgShadowY}
+                          onChange={(e) => { const v=Number(e.target.value); setImgShadowY(v); updateSelected({ shadowOffsetY: v }); }}
+                          onWheel={(e) => { e.preventDefault(); const v=Math.min(40,Math.max(-40,imgShadowY+(e.deltaY<0?1:-1))); setImgShadowY(v); updateSelected({ shadowOffsetY: v }); }}
+                          className="w-8 text-xs text-right tabular-nums bg-transparent border-0 outline-none focus:ring-1 focus:ring-primary rounded px-0.5 text-muted-foreground" />
+                      </div>
+                    </>)}
+                  </>)}
 
                 </>)}
 

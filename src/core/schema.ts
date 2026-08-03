@@ -47,6 +47,10 @@ export type CircleAnnotation = {
   lineWidth: number;
   fill?: "none" | "solid" | "semi"; // legacy — use fillOpacity when present
   fillOpacity?: number; // 0-100 (0 = no fill, 100 = fully opaque)
+  shadowBlur?: number;
+  shadowColor?: string;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
 };
 
 export type EllipseAnnotation = {
@@ -57,6 +61,10 @@ export type EllipseAnnotation = {
   lineWidth: number;
   fillOpacity?: number; // 0-100 (0 = no fill, 100 = fully opaque)
   rotation?: number;   // radians
+  shadowBlur?: number;
+  shadowColor?: string;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
 };
 
 export type TextAnnotation = {
@@ -81,6 +89,10 @@ export type RectAnnotation = {
   fill?: "none" | "solid" | "semi"; // legacy — use fillOpacity when present
   fillOpacity?: number; // 0-100 (0 = no fill, 100 = fully opaque)
   rotation?: number;   // radians, around the rect centre
+  shadowBlur?: number;
+  shadowColor?: string;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
 };
 
 export type ImageAnnotation = {
