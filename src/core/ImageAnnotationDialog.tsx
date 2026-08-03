@@ -54,7 +54,7 @@ export type {
 } from "./schema";
 export { ANNOTATION_SCHEMA_VERSION, createAnnotationDocument, parseAnnotationDocument, type AnnotationDocument } from "./schema";
 
-type Tool = "select" | "arrow" | "line" | "circle" | "ellipse" | "rect" | "text";
+type Tool = "select" | "arrow" | "line" | "circle" | "ellipse" | "rect" | "text" | "crop";
 
 const COLORS = [
   "#ef4444", // red
@@ -72,6 +72,28 @@ function rotatePoint(px: number, py: number, cx: number, cy: number, angle: numb
   const cos = Math.cos(angle), sin = Math.sin(angle);
   const dx = px - cx, dy = py - cy;
   return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+}
+
+/**
+ * Image-crop helpers — convert between real canvas space and "unrotated crop space".
+ *
+ * When an image annotation has a non-zero rotation the crop rect is tracked in the
+ * image's local (unrotated) coordinate frame so that the extracted pixels are always
+ * correct regardless of how the image is rotated on the canvas.
+ *
+ * "Unrotated crop space" is canvas space as seen with the image's rotation stripped out:
+ * every canvas point is counter-rotated around the image centre by -rotation.  In that
+ * space the image occupies the usual axis-aligned rectangle [x, x+w] × [y, y+h].
+ */
+function toUnrotatedCropSpace(cx: number, cy: number, ann: { x: number; y: number; width: number; height: number; rotation?: number }): { x: number; y: number } {
+  const rot = ann.rotation ?? 0;
+  if (rot === 0) return { x: cx, y: cy };
+  return rotatePoint(cx, cy, ann.x + ann.width / 2, ann.y + ann.height / 2, -rot);
+}
+function fromUnrotatedCropSpace(ux: number, uy: number, ann: { x: number; y: number; width: number; height: number; rotation?: number }): { x: number; y: number } {
+  const rot = ann.rotation ?? 0;
+  if (rot === 0) return { x: ux, y: uy };
+  return rotatePoint(ux, uy, ann.x + ann.width / 2, ann.y + ann.height / 2, rot);
 }
 function distPtToSegment(
   px: number, py: number,
@@ -947,17 +969,41 @@ export function ImageAnnotationDialog({
   const annotationsRef  = useRef<Annotation[]>([]);   // always-current mirror for history helpers
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  // Parallel canvas-offset history so crop can be undone/redone
+  type OffsetSnap = { ox: number; oy: number; pr: number; pb: number };
+  const canvasOffsetHistoryRef = useRef<OffsetSnap[]>([]);
+  const canvasOffsetRedoRef    = useRef<OffsetSnap[]>([]);
+  const canvasOffsetXRef         = useRef(0);
+  const canvasOffsetYRef         = useRef(0);
+  const canvasPaddingRightRef    = useRef(0);
+  const canvasPaddingBottomRef   = useRef(0);
 
-  // Keep annotationsRef in sync (one render behind is fine — history is read only before mutations)
+  // Keep annotationsRef and canvas-offset refs in sync
   useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
 
   /** Call BEFORE any mutation to snapshot the current state onto the undo stack. */
   function pushHistory() {
     undoStackRef.current = [...undoStackRef.current.slice(-49), [...annotationsRef.current]];
+    canvasOffsetHistoryRef.current = [...canvasOffsetHistoryRef.current.slice(-49), {
+      ox: canvasOffsetXRef.current, oy: canvasOffsetYRef.current,
+      pr: canvasPaddingRightRef.current, pb: canvasPaddingBottomRef.current,
+    }];
     redoStackRef.current = [];
+    canvasOffsetRedoRef.current = [];
     setCanUndo(true);
     setCanRedo(false);
   }
+  // ── Crop tool state ──────────────────────────────────────────────────────────
+  const [cropRect, setCropRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  type CropHandle = "nw"|"n"|"ne"|"e"|"se"|"s"|"sw"|"w";
+  type CropHit    = CropHandle | "move";
+  type CropDragState =
+    | { kind: "draw";   startX: number; startY: number }
+    | { kind: "move";   startX: number; startY: number; origRect: { x1: number; y1: number; x2: number; y2: number } }
+    | { kind: "resize"; handle: CropHandle; startX: number; startY: number; origRect: { x1: number; y1: number; x2: number; y2: number } };
+  const cropDragRef    = useRef<CropDragState | null>(null);
+  const [cropHitArea, setCropHitArea] = useState<CropHit | null>(null);
+
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
   const [guides,        setGuides]        = useState<Guide[]>([]);
   const [spacingGuides, setSpacingGuides] = useState<SpacingGuide[]>([]);
@@ -966,6 +1012,12 @@ export function ImageAnnotationDialog({
   const selectedIndex = selectedIndices.length === 1 ? selectedIndices[0] : null;
   function setSelectedIndex(i: number | null) { setSelectedIndices(i != null ? [i] : []); }
   const [tool, setTool] = useState<Tool>("select");
+  // imageCropMode: true when crop tool is active AND exactly one image annotation is selected.
+  // In this mode the crop rect is constrained to that image and applies to its dataUrl.
+  const cropTargetAnn  = (tool === "crop" && selectedIndices.length === 1
+    ? annotations[selectedIndices[0]]
+    : null) as ImageAnnotation | null;
+  const imageCropMode = cropTargetAnn?.kind === "image";
   const [color, setColor] = useState(() => { const p = loadToolPrefs(); return str(p.color, "#000000"); });
   const [lineWidth, setLineWidth] = useState(() => { const p = loadToolPrefs(); return num(p.lineWidth, 1); });
   const [fontSize, setFontSize] = useState(() => { const p = loadToolPrefs(); return num(p.fontSize, 20); });
@@ -1057,6 +1109,11 @@ export function ImageAnnotationDialog({
   const [canvasOffsetY, setCanvasOffsetY] = useState(0); // top padding   → shifts image down
   const [canvasPaddingRight,  setCanvasPaddingRight]  = useState(0);
   const [canvasPaddingBottom, setCanvasPaddingBottom] = useState(0);
+  // Keep offset refs in sync for use in pushHistory() closures
+  useEffect(() => { canvasOffsetXRef.current       = canvasOffsetX;       }, [canvasOffsetX]);
+  useEffect(() => { canvasOffsetYRef.current        = canvasOffsetY;        }, [canvasOffsetY]);
+  useEffect(() => { canvasPaddingRightRef.current   = canvasPaddingRight;   }, [canvasPaddingRight]);
+  useEffect(() => { canvasPaddingBottomRef.current  = canvasPaddingBottom;  }, [canvasPaddingBottom]);
 
   const [preview, setPreview] = useState<Annotation | null>(null);
 
@@ -1144,6 +1201,16 @@ export function ImageAnnotationDialog({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, imgLoaded]);
 
+  // ── Auto-fit when image finishes loading ─────────────────────────────────────
+  useEffect(() => {
+    if (!imgLoaded || !open) return;
+    // Two rAF frames: first lets the canvas resize/render, second lets the
+    // viewport report its final clientWidth/clientHeight before we measure.
+    requestAnimationFrame(() => requestAnimationFrame(() => fitZoom()));
+  // fitZoom is stable (defined in render scope); open/imgLoaded are the triggers
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imgLoaded, open]);
+
   // ── Load image ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1165,6 +1232,9 @@ export function ImageAnnotationDialog({
     setCanvasOffsetY(initialCanvasOffsets?.y ?? 0);
     setCanvasPaddingRight(initialCanvasOffsets?.right ?? 0);
     setCanvasPaddingBottom(initialCanvasOffsets?.bottom ?? 0);
+    // Reset crop state
+    setCropRect(null);
+    cropDragRef.current = null;
     // Reset drawing tool state so the displayed values always match what gets drawn
     setTool("select");
     setLineWidth(1);
@@ -1369,8 +1439,116 @@ export function ImageAnnotationDialog({
       }
       ctx.restore();
     }
+    // ── Crop-tool overlay (UI-only, not exported) ──────────────────────────────
+    if (cropRect || imageCropMode) {
+      const cW = img.naturalWidth  + canvasOffsetX + canvasPaddingRight;
+      const cH = img.naturalHeight + canvasOffsetY + canvasPaddingBottom;
+
+      ctx.save();
+      ctx.shadowBlur = 0;
+
+      // In image-crop mode: dim everything outside the target image annotation.
+      // For rotated images use the AABB as an approximation for the dim region;
+      // the amber outline is drawn in the image's rotated coordinate frame.
+      if (imageCropMode && cropTargetAnn) {
+        const ia = cropTargetAnn;
+        const iaRot = ia.rotation ?? 0;
+        if (iaRot === 0) {
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(0,              0,              cW,                    ia.y);
+          ctx.fillRect(0,              ia.y + ia.height, cW,                  cH - ia.y - ia.height);
+          ctx.fillRect(0,              ia.y,            ia.x,                 ia.height);
+          ctx.fillRect(ia.x + ia.width, ia.y,           cW - ia.x - ia.width, ia.height);
+        } else {
+          // Dim the whole canvas and let the rotated clip punch out the image area
+          const iaBB  = getBBox(ia);
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(0, 0, cW, iaBB.top);
+          ctx.fillRect(0, iaBB.bottom, cW, cH - iaBB.bottom);
+          ctx.fillRect(0, iaBB.top, iaBB.left, iaBB.bottom - iaBB.top);
+          ctx.fillRect(iaBB.right, iaBB.top, cW - iaBB.right, iaBB.bottom - iaBB.top);
+        }
+        // Amber dashed border — drawn in the image's rotated frame
+        ctx.save();
+        const iaRot2 = ia.rotation ?? 0;
+        if (iaRot2 !== 0) {
+          const icx = ia.x + ia.width / 2, icy = ia.y + ia.height / 2;
+          ctx.translate(icx, icy); ctx.rotate(iaRot2); ctx.translate(-icx, -icy);
+        }
+        ctx.strokeStyle = "#f59e0b";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(ia.x, ia.y, ia.width, ia.height);
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
+      if (!cropRect) { ctx.restore(); return; }
+      const x1 = Math.min(cropRect.x1, cropRect.x2);
+      const y1 = Math.min(cropRect.y1, cropRect.y2);
+      const x2 = Math.max(cropRect.x1, cropRect.x2);
+      const y2 = Math.max(cropRect.y1, cropRect.y2);
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+
+      // For a rotated image annotation the crop rect is tracked in "unrotated crop space"
+      // (the image's local frame).  Rotate the canvas context so the overlay sits correctly.
+      const cropRot = (imageCropMode && cropTargetAnn) ? (cropTargetAnn.rotation ?? 0) : 0;
+      if (cropRot !== 0 && cropTargetAnn) {
+        const icx = cropTargetAnn.x + cropTargetAnn.width  / 2;
+        const icy = cropTargetAnn.y + cropTargetAnn.height / 2;
+        ctx.translate(icx, icy); ctx.rotate(cropRot); ctx.translate(-icx, -icy);
+      }
+
+      if (!imageCropMode) {
+        // Canvas-crop: dim outside the crop rect (full canvas)
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(0,  0,  cW,       y1);
+        ctx.fillRect(0,  y2, cW,       cH - y2);
+        ctx.fillRect(0,  y1, x1,       y2 - y1);
+        ctx.fillRect(x2, y1, cW - x2,  y2 - y1);
+      } else if (cropTargetAnn) {
+        // Image-crop: dim the image area outside the crop rect
+        const ia = cropTargetAnn;
+        ctx.fillStyle = "rgba(0,0,0,0.4)";
+        ctx.fillRect(ia.x,            ia.y,            ia.width,             y1 - ia.y);
+        ctx.fillRect(ia.x,            y2,              ia.width,             ia.y + ia.height - y2);
+        ctx.fillRect(ia.x,            y1,              x1 - ia.x,           y2 - y1);
+        ctx.fillRect(x2,              y1,              ia.x + ia.width - x2, y2 - y1);
+      }
+
+      // Dashed border around the crop rect
+      ctx.strokeStyle = imageCropMode ? "#f59e0b" : "#fff";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      // Rule-of-thirds grid (faint)
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.lineWidth = 1;
+      const gW = (x2 - x1) / 3, gH = (y2 - y1) / 3;
+      for (let i = 1; i <= 2; i++) {
+        ctx.beginPath(); ctx.moveTo(x1 + gW * i, y1); ctx.lineTo(x1 + gW * i, y2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x1, y1 + gH * i); ctx.lineTo(x2, y1 + gH * i); ctx.stroke();
+      }
+      // Resize handles — 8 white squares at corners + edge midpoints
+      const HR = 5; // handle half-size in canvas px
+      const handles = [
+        { hx: x1, hy: y1 }, { hx: mx, hy: y1 }, { hx: x2, hy: y1 },
+        { hx: x2, hy: my }, { hx: x2, hy: y2 }, { hx: mx, hy: y2 },
+        { hx: x1, hy: y2 }, { hx: x1, hy: my },
+      ];
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      for (const { hx, hy } of handles) {
+        ctx.fillRect(hx - HR, hy - HR, HR * 2, HR * 2);
+        ctx.strokeRect(hx - HR, hy - HR, HR * 2, HR * 2);
+      }
+      ctx.restore();
+    }
   }, [annotations, selectedIndices, guides, spacingGuides, dimGuides, preview, imgLoaded,
-      canvasOffsetX, canvasOffsetY, canvasPaddingRight, canvasPaddingBottom]);
+      canvasOffsetX, canvasOffsetY, canvasPaddingRight, canvasPaddingBottom, cropRect,
+      imageCropMode, cropTargetAnn]);
 
   // Keep redrawRef pointing at the latest redraw so async callbacks (image load) can call it
   useEffect(() => { redrawRef.current = redraw; }, [redraw]);
@@ -1382,7 +1560,7 @@ export function ImageAnnotationDialog({
   // ── Unsaved-changes guard ─────────────────────────────────────────────────────
 
   function hasChanges(): boolean {
-    if (canvasOffsetX > 0 || canvasOffsetY > 0 || canvasPaddingRight > 0 || canvasPaddingBottom > 0) return true;
+    if (canvasOffsetX !== 0 || canvasOffsetY !== 0 || canvasPaddingRight !== 0 || canvasPaddingBottom !== 0) return true;
     const initial = initialAnnotations ?? [];
     if (annotations.length !== initial.length) return true;
     return JSON.stringify(annotations) !== JSON.stringify(initial);
@@ -1445,6 +1623,138 @@ export function ImageAnnotationDialog({
     setCanvasPaddingBottom(Math.max(0, maxY - canvasOffsetY - img.naturalHeight));
   }
 
+  // ── Crop apply ────────────────────────────────────────────────────────────────
+
+  /** Crop a single image annotation's dataUrl to the current cropRect. */
+  function applyImageCrop() {
+    if (!cropRect || !cropTargetAnn) return;
+    const ann = cropTargetAnn;
+    const imgEl = imageElemCacheRef.current.get(ann.dataUrl);
+    if (!imgEl) return;
+
+    // cropRect is stored in "unrotated crop space" (see toUnrotatedCropSpace).
+    // For rotation=0 this is identical to canvas space.
+    const x1 = Math.round(Math.min(cropRect.x1, cropRect.x2));
+    const y1 = Math.round(Math.min(cropRect.y1, cropRect.y2));
+    const x2 = Math.round(Math.max(cropRect.x1, cropRect.x2));
+    const y2 = Math.round(Math.max(cropRect.y1, cropRect.y2));
+    if (x2 - x1 < 2 || y2 - y1 < 2) { setCropRect(null); return; }
+
+    // Map unrotated-crop-space crop rect → image natural-pixel space.
+    // In unrotated crop space the image occupies [ann.x, ann.x+ann.width] × [ann.y, ann.y+ann.height],
+    // so the relative offset is simply (x1 - ann.x, y1 - ann.y).
+    const scaleX = imgEl.naturalWidth  / ann.width;
+    const scaleY = imgEl.naturalHeight / ann.height;
+    const relX1 = Math.max(0, x1 - ann.x);
+    const relY1 = Math.max(0, y1 - ann.y);
+    const relX2 = Math.min(ann.width,  x2 - ann.x);
+    const relY2 = Math.min(ann.height, y2 - ann.y);
+    const srcX = Math.round(relX1 * scaleX);
+    const srcY = Math.round(relY1 * scaleY);
+    const srcW = Math.max(1, Math.round((relX2 - relX1) * scaleX));
+    const srcH = Math.max(1, Math.round((relY2 - relY1) * scaleY));
+
+    // Draw cropped region onto offscreen canvas → new PNG dataUrl
+    const off = document.createElement("canvas");
+    off.width  = srcW;
+    off.height = srcH;
+    const ctx2 = off.getContext("2d")!;
+    ctx2.drawImage(imgEl, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+    const newDataUrl = off.toDataURL("image/png");
+
+    pushHistory();
+
+    const newW = relX2 - relX1;
+    const newH = relY2 - relY1;
+
+    // Compute the new canvas-space top-left.
+    // The crop rect was drawn in unrotated space, so the new annotation top-left in
+    // unrotated space is (ann.x + relX1, ann.y + relY1).  For a rotated image we must
+    // rotate the new centre point back into real canvas space (keeping the same rotation).
+    const rot = ann.rotation ?? 0;
+    let newX: number, newY: number;
+    if (rot === 0) {
+      newX = ann.x + relX1;
+      newY = ann.y + relY1;
+    } else {
+      // Original image centre (real canvas space)
+      const origCx = ann.x + ann.width  / 2;
+      const origCy = ann.y + ann.height / 2;
+      // New bounding-box centre in unrotated crop space
+      const uCx = ann.x + relX1 + newW / 2;
+      const uCy = ann.y + relY1 + newH / 2;
+      // Rotate new centre back to real canvas space
+      const { x: rCx, y: rCy } = rotatePoint(uCx, uCy, origCx, origCy, rot);
+      newX = rCx - newW / 2;
+      newY = rCy - newH / 2;
+    }
+
+    const annIdx = selectedIndices[0];
+    setAnnotations(prev =>
+      prev.map((a, i) =>
+        i === annIdx
+          ? { ...ann, dataUrl: newDataUrl, x: newX, y: newY, width: newW, height: newH } as ImageAnnotation
+          : a
+      )
+    );
+    // Register the new image in the cache so the canvas renders immediately
+    const newEl = new Image();
+    newEl.onload = () => { imageElemCacheRef.current.set(newDataUrl, newEl); redrawRef.current(); };
+    newEl.src = newDataUrl;
+
+    setCropRect(null);
+    setTool("select");
+  }
+
+  function applyCrop() {
+    // Delegate to image-annotation crop when a single image is selected
+    if (imageCropMode) { applyImageCrop(); return; }
+    if (!cropRect || !imgRef.current) return;
+    // Normalise rect
+    const x1 = Math.round(Math.min(cropRect.x1, cropRect.x2));
+    const y1 = Math.round(Math.min(cropRect.y1, cropRect.y2));
+    const x2 = Math.round(Math.max(cropRect.x1, cropRect.x2));
+    const y2 = Math.round(Math.max(cropRect.y1, cropRect.y2));
+    if (x2 - x1 < 4 || y2 - y1 < 4) { setCropRect(null); return; }
+
+    const img = imgRef.current;
+    pushHistory();
+
+    // The canvas coordinate formula (used in handleSave / redraw / fitZoom) is:
+    //   canvas_width  = imgW + canvasOffsetX + canvasPaddingRight
+    //   canvas_height = imgH + canvasOffsetY + canvasPaddingBottom
+    //   image drawn at (canvasOffsetX, canvasOffsetY)
+    //
+    // After crop to (x1,y1)-(x2,y2) the new canvas must be exactly (x2-x1) × (y2-y1).
+    // Solving canvas_width = imgW + newOX + newPR = x2-x1 and newOX = canvasOffsetX - x1:
+    //   newPR = (x2-x1) - imgW - (canvasOffsetX-x1) = x2 - canvasOffsetX - imgW
+    // This can be negative → the canvas clips the right/bottom of the image, which is correct.
+    const newOX = canvasOffsetX - x1;
+    const newOY = canvasOffsetY - y1;
+    const newPR = x2 - canvasOffsetX - img.naturalWidth;
+    const newPB = y2 - canvasOffsetY - img.naturalHeight;
+    // Single source of truth for the post-crop canvas bounds (in the shifted coordinate space)
+    const newW  = x2 - x1;
+    const newH  = y2 - y1;
+
+    // Shift all annotations to the new origin, then remove any entirely outside the new canvas
+    setAnnotations(prev =>
+      prev
+        .map(ann => shiftAnnotation(ann, -x1, -y1))
+        .filter(ann => {
+          const bb = getBBox(ann);
+          return bb.right > 0 && bb.bottom > 0 && bb.left < newW && bb.top < newH;
+        })
+    );
+    setCanvasOffsetX(newOX);
+    setCanvasOffsetY(newOY);
+    setCanvasPaddingRight(newPR);
+    setCanvasPaddingBottom(newPB);
+    setCropRect(null);
+    setTool("select");
+    setSelectedIndices([]);
+  }
+
   function requestClose() {
     if (hasChanges()) {
       setShowExitConfirm(true);
@@ -1502,6 +1812,46 @@ export function ImageAnnotationDialog({
       if (nearPoint(x, y, rhp.x, rhp.y)) return "resize";
     }
     return null;
+  }
+
+  /** Hit-test cursor position against a crop rect — returns handle name, "move", or null. */
+  function hitTestCropRect(x: number, y: number, r: { x1: number; y1: number; x2: number; y2: number }) {
+    const CROP_HIT_R = 8 / zoomRef.current; // px in canvas coords
+    const x1 = Math.min(r.x1, r.x2), y1 = Math.min(r.y1, r.y2);
+    const x2 = Math.max(r.x1, r.x2), y2 = Math.max(r.y1, r.y2);
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    // Corner handles (priority over edge midpoints)
+    if (Math.hypot(x - x1, y - y1) <= CROP_HIT_R) return "nw" as const;
+    if (Math.hypot(x - x2, y - y1) <= CROP_HIT_R) return "ne" as const;
+    if (Math.hypot(x - x2, y - y2) <= CROP_HIT_R) return "se" as const;
+    if (Math.hypot(x - x1, y - y2) <= CROP_HIT_R) return "sw" as const;
+    // Edge midpoint handles
+    if (Math.hypot(x - mx, y - y1) <= CROP_HIT_R) return "n" as const;
+    if (Math.hypot(x - x2, y - my) <= CROP_HIT_R) return "e" as const;
+    if (Math.hypot(x - mx, y - y2) <= CROP_HIT_R) return "s" as const;
+    if (Math.hypot(x - x1, y - my) <= CROP_HIT_R) return "w" as const;
+    // Interior — move
+    if (x >= x1 && x <= x2 && y >= y1 && y <= y2) return "move" as const;
+    return null;
+  }
+
+  /** Snap a canvas coordinate to the nearest image edge when within CROP_SNAP px. */
+  function snapToImageEdge(v: number, axis: "x" | "y"): number {
+    const CROP_SNAP = 8;
+    const img = imgRef.current;
+    if (!img) return v;
+    if (axis === "x") {
+      const left  = canvasOffsetXRef.current;
+      const right = left + img.naturalWidth;
+      if (Math.abs(v - left)  <= CROP_SNAP) return left;
+      if (Math.abs(v - right) <= CROP_SNAP) return right;
+    } else {
+      const top    = canvasOffsetYRef.current;
+      const bottom = top + img.naturalHeight;
+      if (Math.abs(v - top)    <= CROP_SNAP) return top;
+      if (Math.abs(v - bottom) <= CROP_SNAP) return bottom;
+    }
+    return v;
   }
 
   function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
@@ -1580,6 +1930,34 @@ export function ImageAnnotationDialog({
       return;
     }
 
+    // crop: move/resize existing rect, or start a new one
+    if (tool === "crop") {
+      // In image-crop mode with a rotated annotation, convert to unrotated crop space first.
+      const cropX = (imageCropMode && cropTargetAnn) ? toUnrotatedCropSpace(x, y, cropTargetAnn).x : x;
+      const cropY = (imageCropMode && cropTargetAnn) ? toUnrotatedCropSpace(x, y, cropTargetAnn).y : y;
+      if (cropRect) {
+        const hit = hitTestCropRect(cropX, cropY, cropRect);
+        if (hit === "move") {
+          cropDragRef.current = { kind: "move", startX: cropX, startY: cropY, origRect: { ...cropRect } };
+          return;
+        }
+        if (hit) {
+          cropDragRef.current = { kind: "resize", handle: hit, startX: cropX, startY: cropY, origRect: { ...cropRect } };
+          return;
+        }
+      }
+      // Draw a new rect — in image-crop mode clamp start to the image annotation bounds
+      let sx = imageCropMode ? cropX : snapToImageEdge(x, "x");
+      let sy = imageCropMode ? cropY : snapToImageEdge(y, "y");
+      if (imageCropMode && cropTargetAnn) {
+        sx = Math.max(cropTargetAnn.x, Math.min(cropTargetAnn.x + cropTargetAnn.width,  sx));
+        sy = Math.max(cropTargetAnn.y, Math.min(cropTargetAnn.y + cropTargetAnn.height, sy));
+      }
+      cropDragRef.current = { kind: "draw", startX: sx, startY: sy };
+      setCropRect({ x1: sx, y1: sy, x2: sx, y2: sy });
+      return;
+    }
+
     // arrow, line, circle, rect: start drawing
     dragRef.current = { kind: "draw", startX: x, startY: y };
   }
@@ -1611,6 +1989,58 @@ export function ImageAnnotationDialog({
       // Show move cursor when hovering over any annotation body
       const onBody = !onHandle && annotations.some(ann => hitTest(ann, x, y));
       setOverBody(onBody);
+    }
+
+    // Crop: update hover area (for cursor) and handle active drags
+    if (tool === "crop") {
+      const cd = cropDragRef.current;
+      // In image-crop mode with a rotated annotation, convert to unrotated crop space.
+      const cropX = (imageCropMode && cropTargetAnn) ? toUnrotatedCropSpace(x, y, cropTargetAnn).x : x;
+      const cropY = (imageCropMode && cropTargetAnn) ? toUnrotatedCropSpace(x, y, cropTargetAnn).y : y;
+      if (!cd) {
+        // Not dragging — update hover area for cursor
+        setCropHitArea(cropRect ? hitTestCropRect(cropX, cropY, cropRect) : null);
+        return;
+      }
+      /** Clamp a crop-space coordinate to the image annotation bounds (image-crop mode only). */
+      const clampToImg = (v: number, axis: "x" | "y") => {
+        if (!imageCropMode || !cropTargetAnn) return v;
+        return axis === "x"
+          ? Math.max(cropTargetAnn.x, Math.min(cropTargetAnn.x + cropTargetAnn.width,  v))
+          : Math.max(cropTargetAnn.y, Math.min(cropTargetAnn.y + cropTargetAnn.height, v));
+      };
+
+      if (cd.kind === "draw") {
+        // imageCropMode: coords already in unrotated crop space; non-image-crop: snap to canvas image edges
+        const sx = imageCropMode ? clampToImg(cropX, "x") : clampToImg(snapToImageEdge(x, "x"), "x");
+        const sy = imageCropMode ? clampToImg(cropY, "y") : clampToImg(snapToImageEdge(y, "y"), "y");
+        setCropRect({ x1: cd.startX, y1: cd.startY, x2: sx, y2: sy });
+      } else if (cd.kind === "move") {
+        const dx = cropX - cd.startX, dy = cropY - cd.startY;
+        let r = {
+          x1: cd.origRect.x1 + dx, y1: cd.origRect.y1 + dy,
+          x2: cd.origRect.x2 + dx, y2: cd.origRect.y2 + dy,
+        };
+        // In image-crop mode: keep the rect inside the image (shift if it hits an edge)
+        if (imageCropMode && cropTargetAnn) {
+          const rw = r.x2 - r.x1, rh = r.y2 - r.y1;
+          r.x1 = Math.max(cropTargetAnn.x, Math.min(cropTargetAnn.x + cropTargetAnn.width  - rw, r.x1));
+          r.y1 = Math.max(cropTargetAnn.y, Math.min(cropTargetAnn.y + cropTargetAnn.height - rh, r.y1));
+          r.x2 = r.x1 + rw; r.y2 = r.y1 + rh;
+        }
+        setCropRect(r);
+      } else if (cd.kind === "resize") {
+        const orig = cd.origRect;
+        const dx = cropX - cd.startX, dy = cropY - cd.startY;
+        let { x1, y1, x2, y2 } = orig;
+        const h = cd.handle;
+        if (h === "nw" || h === "w" || h === "sw") x1 = clampToImg(imageCropMode ? orig.x1 + dx : snapToImageEdge(orig.x1 + dx, "x"), "x");
+        if (h === "ne" || h === "e" || h === "se") x2 = clampToImg(imageCropMode ? orig.x2 + dx : snapToImageEdge(orig.x2 + dx, "x"), "x");
+        if (h === "nw" || h === "n" || h === "ne") y1 = clampToImg(imageCropMode ? orig.y1 + dy : snapToImageEdge(orig.y1 + dy, "y"), "y");
+        if (h === "sw" || h === "s" || h === "se") y2 = clampToImg(imageCropMode ? orig.y2 + dy : snapToImageEdge(orig.y2 + dy, "y"), "y");
+        setCropRect({ x1, y1, x2, y2 });
+      }
+      return;
     }
 
     if (!dragRef.current) return;
@@ -1920,6 +2350,12 @@ export function ImageAnnotationDialog({
 
   function handleMouseUp(e: React.MouseEvent<HTMLCanvasElement>) {
     if (panDragRef.current) { panDragRef.current = null; return; }
+    // Crop tool uses its own ref — handle BEFORE the dragRef guard
+    if (tool === "crop" && cropDragRef.current) {
+      cropDragRef.current = null;
+      // Keep cropRect — user confirms/cancels via the bar
+      return;
+    }
     if (!dragRef.current) return;
     const { x, y } = canvasCoords(e);
     const drag = dragRef.current;
@@ -2069,6 +2505,7 @@ export function ImageAnnotationDialog({
         }
       }
     }
+
     setPreview(null);
     setOverHandle(false);
     setOverBody(false);
@@ -2226,11 +2663,21 @@ export function ImageAnnotationDialog({
 
   function handleUndo() {
     const stack = undoStackRef.current;
+    const oStack = canvasOffsetHistoryRef.current;
     if (stack.length === 0) return;
-    const snapshot = stack[stack.length - 1];
-    undoStackRef.current = stack.slice(0, -1);
-    redoStackRef.current = [...redoStackRef.current, [...annotationsRef.current]];
+    const snapshot  = stack[stack.length - 1];
+    const oSnapshot = oStack[oStack.length - 1];
+    undoStackRef.current           = stack.slice(0, -1);
+    canvasOffsetHistoryRef.current = oStack.slice(0, -1);
+    redoStackRef.current         = [...redoStackRef.current,         [...annotationsRef.current]];
+    canvasOffsetRedoRef.current  = [...canvasOffsetRedoRef.current,  { ox: canvasOffsetXRef.current, oy: canvasOffsetYRef.current, pr: canvasPaddingRightRef.current, pb: canvasPaddingBottomRef.current }];
     setAnnotations(snapshot);
+    if (oSnapshot) {
+      setCanvasOffsetX(oSnapshot.ox);
+      setCanvasOffsetY(oSnapshot.oy);
+      setCanvasPaddingRight(oSnapshot.pr);
+      setCanvasPaddingBottom(oSnapshot.pb);
+    }
     setSelectedIndices([]);
     setCanUndo(stack.length > 1);
     setCanRedo(true);
@@ -2238,12 +2685,22 @@ export function ImageAnnotationDialog({
   }
 
   function handleRedo() {
-    const stack = redoStackRef.current;
+    const stack  = redoStackRef.current;
+    const oStack = canvasOffsetRedoRef.current;
     if (stack.length === 0) return;
-    const snapshot = stack[stack.length - 1];
-    redoStackRef.current = stack.slice(0, -1);
-    undoStackRef.current = [...undoStackRef.current, [...annotationsRef.current]];
+    const snapshot  = stack[stack.length - 1];
+    const oSnapshot = oStack[oStack.length - 1];
+    redoStackRef.current         = stack.slice(0, -1);
+    canvasOffsetRedoRef.current  = oStack.slice(0, -1);
+    undoStackRef.current           = [...undoStackRef.current,           [...annotationsRef.current]];
+    canvasOffsetHistoryRef.current = [...canvasOffsetHistoryRef.current,  { ox: canvasOffsetXRef.current, oy: canvasOffsetYRef.current, pr: canvasPaddingRightRef.current, pb: canvasPaddingBottomRef.current }];
     setAnnotations(snapshot);
+    if (oSnapshot) {
+      setCanvasOffsetX(oSnapshot.ox);
+      setCanvasOffsetY(oSnapshot.oy);
+      setCanvasPaddingRight(oSnapshot.pr);
+      setCanvasPaddingBottom(oSnapshot.pb);
+    }
     setSelectedIndices([]);
     setCanUndo(true);
     setCanRedo(stack.length > 1);
@@ -2286,13 +2743,20 @@ export function ImageAnnotationDialog({
 
       // Tool shortcuts
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (e.key === "v" || e.key === "V") { e.preventDefault(); setTool("select"); return; }
-        if (e.key === "a" || e.key === "A") { e.preventDefault(); setTool("arrow");  return; }
-        if (e.key === "l" || e.key === "L") { e.preventDefault(); setTool("line");   return; }
-        if (e.key === "c" || e.key === "C") { e.preventDefault(); setTool("circle");  return; }
-        if (e.key === "e" || e.key === "E") { e.preventDefault(); setTool("ellipse"); return; }
-        if (e.key === "r" || e.key === "R") { e.preventDefault(); setTool("rect");    return; }
-        if (e.key === "t" || e.key === "T") { e.preventDefault(); setTool("text");   return; }
+        if (e.key === "v" || e.key === "V") { e.preventDefault(); setTool("select"); setCropRect(null); return; }
+        if (e.key === "a" || e.key === "A") { e.preventDefault(); setTool("arrow");  setCropRect(null); return; }
+        if (e.key === "l" || e.key === "L") { e.preventDefault(); setTool("line");   setCropRect(null); return; }
+        if (e.key === "c" || e.key === "C") { e.preventDefault(); setTool("circle"); setCropRect(null); return; }
+        if (e.key === "e" || e.key === "E") { e.preventDefault(); setTool("ellipse"); setCropRect(null); return; }
+        if (e.key === "r" || e.key === "R") { e.preventDefault(); setTool("rect");   setCropRect(null); return; }
+        if (e.key === "t" || e.key === "T") { e.preventDefault(); setTool("text");   setCropRect(null); return; }
+        if (e.key === "x" || e.key === "X") { e.preventDefault(); setTool("crop");   setCropRect(null); return; }
+        // Enter confirms a pending crop rect
+        if (e.key === "Enter" && toolRef.current === "crop") {
+          e.preventDefault();
+          applyCropRef.current?.();
+          return;
+        }
       }
 
       // Delete / Backspace → remove all selected annotations
@@ -2392,6 +2856,11 @@ export function ImageAnnotationDialog({
           setTextValue("");
           setEditingIndex(null);
           setSelectedIndex(null);
+        } else if (toolRef.current === "crop") {
+          // cancel any pending crop rect, stay in crop mode so user can retry
+          setCropRect(null);
+          cropDragRef.current = null;
+          setTool("select");
         } else if (toolRef.current !== "select") {
           // drawing tool active → switch back to select, keep selection
           setTool("select");
@@ -2436,6 +2905,9 @@ export function ImageAnnotationDialog({
   useEffect(() => { selectedIndicesRef.current = selectedIndices; }, [selectedIndices]);
   const toolRef = useRef<Tool>("select");
   useEffect(() => { toolRef.current = tool; }, [tool]);
+  // Stable ref so keyboard handler closure can call applyCrop without stale closure
+  const applyCropRef = useRef<(() => void) | null>(null);
+  useEffect(() => { applyCropRef.current = applyCrop; });
 
   // ── Image insertion (Paste / Drag-Drop / File-Button) ───────────────────────
 
@@ -2541,7 +3013,20 @@ export function ImageAnnotationDialog({
 
   // ── Canvas cursor ─────────────────────────────────────────────────────────────
 
+  const cropActiveDrag = cropDragRef.current;
   const cursor =
+    tool === "crop" ? (
+      cropActiveDrag?.kind === "move" || (!cropActiveDrag && cropHitArea === "move")                           ? "move" :
+      (cropActiveDrag?.kind === "resize" && (cropActiveDrag.handle === "nw" || cropActiveDrag.handle === "se")) ||
+        (!cropActiveDrag && (cropHitArea === "nw" || cropHitArea === "se"))                                    ? "nwse-resize" :
+      (cropActiveDrag?.kind === "resize" && (cropActiveDrag.handle === "ne" || cropActiveDrag.handle === "sw")) ||
+        (!cropActiveDrag && (cropHitArea === "ne" || cropHitArea === "sw"))                                    ? "nesw-resize" :
+      (cropActiveDrag?.kind === "resize" && (cropActiveDrag.handle === "n" || cropActiveDrag.handle === "s")) ||
+        (!cropActiveDrag && (cropHitArea === "n" || cropHitArea === "s"))                                      ? "ns-resize" :
+      (cropActiveDrag?.kind === "resize" && (cropActiveDrag.handle === "e" || cropActiveDrag.handle === "w")) ||
+        (!cropActiveDrag && (cropHitArea === "e" || cropHitArea === "w"))                                      ? "ew-resize" :
+      "crosshair"
+    ) :
     tool !== "select"                  ? (tool === "text" ? "text" : "crosshair") :
     dragRef.current?.kind === "handle" ? (dragRef.current.handle === "rotate" ? "grabbing" : "grabbing") :
     panDragRef.current                 ? "grabbing" :
@@ -2661,12 +3146,18 @@ export function ImageAnnotationDialog({
                 { id: "rect",    icon: <Square       className="h-4 w-4" />, title: "Rechteck zeichnen [R]" },
                 { id: "text",    icon: <Type         className="h-4 w-4" />, title: "Text [T]" },
               ] as const).map(({ id, icon, title }) => (
-                <button key={id} type="button" title={title} onClick={() => setTool(id as Tool)}
+                <button key={id} type="button" title={title} onClick={() => { setTool(id as Tool); setCropRect(null); }}
                   className={cn("h-8 w-8 flex items-center justify-center rounded transition-colors",
                     tool === id ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>
                   {icon}
                 </button>
               ))}
+              <div className="w-px h-6 bg-border mx-0.5 shrink-0" />
+              <button type="button" title="Bild zuschneiden [X]" onClick={() => { setTool("crop"); setCropRect(null); }}
+                className={cn("h-8 w-8 flex items-center justify-center rounded transition-colors",
+                  tool === "crop" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>
+                <Crop className="h-4 w-4" />
+              </button>
               <div className="w-px h-6 bg-border mx-0.5 shrink-0" />
               <button type="button" title="Bild einfügen — auch per Strg+V oder Drag & Drop"
                 onClick={() => fileInputRef.current?.click()}
@@ -2755,8 +3246,35 @@ export function ImageAnnotationDialog({
 
           </div>{/* end Row 1 */}
 
+          {/* ── Crop confirmation bar — shown while crop tool is active ── */}
+          {tool === "crop" && (
+            <div className="flex items-center gap-2 px-3 py-1.5 border-t bg-amber-50 dark:bg-amber-950/30 text-sm">
+              <Crop className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span className="text-amber-800 dark:text-amber-300 flex-1 min-w-0 truncate">
+                {cropRect && Math.abs(cropRect.x2 - cropRect.x1) > 4 && Math.abs(cropRect.y2 - cropRect.y1) > 4
+                  ? `${imageCropMode ? "Bild zuschneiden" : "Ausschnitt"}: ${Math.round(Math.abs(cropRect.x2 - cropRect.x1))} × ${Math.round(Math.abs(cropRect.y2 - cropRect.y1))} px — Anwenden oder Abbrechen`
+                  : imageCropMode
+                    ? "Zuschnittbereich im Bild aufziehen, dann bestätigen [Enter]"
+                    : "Zuschneidbereich aufziehen, dann bestätigen [Enter]"}
+              </span>
+              <Button type="button" size="sm" className="h-7 shrink-0"
+                disabled={!cropRect || Math.abs(cropRect.x2 - cropRect.x1) <= 4 || Math.abs(cropRect.y2 - cropRect.y1) <= 4}
+                onClick={applyCrop}
+                data-testid="button-apply-crop"
+              >
+                Anwenden [↵]
+              </Button>
+              <Button type="button" variant="outline" size="sm" className="h-7 shrink-0"
+                onClick={() => { setCropRect(null); setTool("select"); }}
+                data-testid="button-cancel-crop"
+              >
+                Abbrechen [Esc]
+              </Button>
+            </div>
+          )}
+
           {/* ── Row 2: Contextual property bar — shown when a tool is active or annotation selected ── */}
-          {(tool !== "select" || selectedIndices.length > 0) && (() => {
+          {(tool !== "select" || selectedIndices.length > 0) && tool !== "crop" && (() => {
             const ann = selectedIndex != null ? annotations[selectedIndex] : null;
             const isImage = ann?.kind === "image";
             const isTextAnn = ann?.kind === "text";
