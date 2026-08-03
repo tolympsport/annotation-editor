@@ -569,6 +569,21 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
       initialCanvasOffsets: CanvasOffsets | null;
       getPos: () => number | undefined;
     } | null>(null);
+    // Radix needs a proper close sequence (open → false, layer removal, focus
+    // restore) BEFORE the dialog unmounts. Unmounting the ImageAnnotationDialog
+    // abruptly while open={true} (setAnnotationState(null) directly) corrupts
+    // Radix's layer stack — in production builds this closes the parent
+    // Montagehinweise dialog too and leaves the page frozen (stale focus trap /
+    // body pointer-events lock). So: first set aeOpen=false, then unmount after
+    // the close sequence has run.
+    const [aeOpen, setAeOpen] = useState(true);
+    useEffect(() => {
+      if (annotationState) setAeOpen(true);
+    }, [annotationState]);
+    const closeAnnotationEditor = useCallback(() => {
+      setAeOpen(false);
+      setTimeout(() => setAnnotationState(null), 250);
+    }, []);
 
     // Refs to avoid stale closures in TipTap callbacks
     const onChangeRef = useRef(onChange);
@@ -870,7 +885,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
           }
         } catch { /* ignore */ }
       }
-      setAnnotationState(null);
+      closeAnnotationEditor();
     }
 
     if (!editor) return null;
@@ -1238,12 +1253,12 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
       {/* Annotation dialog — rendered outside the editor div to avoid z-index issues */}
       {annotationState && onImageUpload && (
         <ImageAnnotationDialog
-          open
+          open={aeOpen}
           imageUrl={annotationState.src}
           initialAnnotations={annotationState.initialAnnotations}
           initialCanvasOffsets={annotationState.initialCanvasOffsets}
           onSave={handleAnnotationSave}
-          onClose={() => setAnnotationState(null)}
+          onClose={closeAnnotationEditor}
           helpAssets={annotationHelpAssets}
         />
       )}
