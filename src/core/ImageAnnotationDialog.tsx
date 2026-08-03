@@ -2903,6 +2903,8 @@ export function ImageAnnotationDialog({
           setSelectedIndex(null);
         } else {
           // nothing selected, nothing active → close the editor
+          // stopPropagation prevents the ESC from reaching parent dialogs
+          e.stopPropagation();
           requestCloseRef.current?.();
         }
       }
