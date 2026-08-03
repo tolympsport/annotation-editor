@@ -577,12 +577,23 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
     // body pointer-events lock). So: first set aeOpen=false, then unmount after
     // the close sequence has run.
     const [aeOpen, setAeOpen] = useState(true);
+    const aeCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     useEffect(() => {
-      if (annotationState) setAeOpen(true);
+      if (annotationState) {
+        // reopening — cancel any pending unmount from a previous close so the
+        // stale timer can't tear down the freshly opened dialog
+        if (aeCloseTimerRef.current) { clearTimeout(aeCloseTimerRef.current); aeCloseTimerRef.current = null; }
+        setAeOpen(true);
+      }
     }, [annotationState]);
+    useEffect(() => () => { if (aeCloseTimerRef.current) clearTimeout(aeCloseTimerRef.current); }, []);
     const closeAnnotationEditor = useCallback(() => {
       setAeOpen(false);
-      setTimeout(() => setAnnotationState(null), 250);
+      if (aeCloseTimerRef.current) clearTimeout(aeCloseTimerRef.current);
+      aeCloseTimerRef.current = setTimeout(() => {
+        aeCloseTimerRef.current = null;
+        setAnnotationState(null);
+      }, 250);
     }, []);
 
     // Refs to avoid stale closures in TipTap callbacks
