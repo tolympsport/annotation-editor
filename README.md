@@ -60,6 +60,33 @@ Zwei Möglichkeiten:
   content: [..., "./node_modules/@tolymp/annotation-editor/dist/**/*.js"]
   ```
 
+### Host-App-Integration: Radix Dedupe (wichtig!)
+
+Das Paket bringt eigene `@radix-ui/*`-Abhängigkeiten mit. Wenn die Host-App ebenfalls Radix verwendet, entstehen im Production-Bundle **zwei separate Radix-Kopien** — mit der Folge, dass jede Kopie ihren eigenen `DismissableLayer`-Stack verwaltet. Das führt dazu, dass ein `Escape`-Tastendruck **beide** Dialoge (den `ImageAnnotationDialog` und den umgebenden Host-Dialog) gleichzeitig schließt.
+
+**Lösung:** In der `vite.config.ts` der Host-App alle gemeinsam genutzten Radix-Pakete deduplizieren:
+
+```ts
+// vite.config.ts der Host-App
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  resolve: {
+    dedupe: [
+      "react",
+      "react-dom",
+      "@radix-ui/react-dialog",
+      "@radix-ui/react-popover",
+      // … alle weiteren @radix-ui/*-Pakete, die Host und Paket gemeinsam nutzen
+    ],
+  },
+});
+```
+
+Ohne diesen Eintrag funktioniert ESC im Development-Build korrekt (Vite dedupliziert dort beim Pre-Bundling automatisch), bricht aber im **Production-Build** ab.
+
+---
+
 ## Entry-Point 1: `ImageAnnotationDialog`
 
 ```tsx
@@ -86,7 +113,15 @@ import {
 />
 ```
 
-Funktionen: Pfeile, Linien, Kreise, Ellipsen, Rechtecke, Text (mit Formatierung), eingefügte Bilder (Stil-Parameter, Spiegeln, Helligkeit/Kontrast), Auswahl/Verschieben/Duplizieren mit Snapping, Undo/Redo, Zoom & Pan, Crop, Leinwand-Erweiterung.
+Funktionen: Pfeile, Linien, Kreise, Ellipsen, Rechtecke, Text (mit Formatierung), eingefügte Bilder (Stil-Parameter, Spiegeln, Helligkeit/Kontrast), Auswahl/Verschieben/Duplizieren mit Snapping, Undo/Redo, Zoom & Pan, Crop (Pointer-Capture-basiert – Rahmen hält exakt bis zum Bildrand), Leinwand-Erweiterung.
+
+### Tastaturkürzel
+
+| Taste | Verhalten |
+|-------|-----------|
+| `Escape` (1×) | Aktives Zeichenwerkzeug wird deaktiviert, Auswahl-Modus wird aktiv |
+| `Escape` (2×) | Aktuell gewählte Annotation wird abgewählt |
+| `Escape` (3×) | Dialog wird geschlossen (entspricht „Abbrechen" / `onClose`) |
 
 ## Entry-Point 2: `RichTextEditor` (TipTap)
 
@@ -130,6 +165,19 @@ import {
 - Das historische (und weiterhin von `data-annotations` genutzte) Wire-Format ist ein nacktes `Annotation[]`-Array — das entspricht Schema-Version 1.
 - Für neue Integrationen wird der `AnnotationDocument`-Envelope mit explizitem `schemaVersion` empfohlen; `parseAnnotationDocument` liest beide Formen.
 - Kompatibilitätsregeln (siehe `src/core/schema.ts`): neue optionale Felder innerhalb einer Version erlaubt; Semantikänderungen erfordern Versionssprung; Legacy-Felder (z. B. `fill` vs. `fillOpacity`) bleiben lesbar.
+
+### Schatten-Eigenschaften (Circle, Ellipse, Rect)
+
+`CircleAnnotation`, `EllipseAnnotation` und `RectAnnotation` unterstützen optionale Schatten-Felder:
+
+| Feld | Typ | Beschreibung |
+|------|-----|--------------|
+| `shadowBlur` | `number` | Weichzeichnungsradius in px (0 = kein Schatten) |
+| `shadowColor` | `string` | CSS-Farbe inkl. Alpha, z. B. `"rgba(0,0,0,0.5)"` |
+| `shadowOffsetX` | `number` | Horizontaler Versatz in px |
+| `shadowOffsetY` | `number` | Vertikaler Versatz in px |
+
+Alle vier Felder sind optional; fehlen sie, wird kein Schatten gerendert. `ImageAnnotation` unterstützt dieselben Felder bereits seit v1.
 
 ## Integrationsbeispiel Modulo-CAD
 
