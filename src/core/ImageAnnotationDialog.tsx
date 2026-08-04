@@ -1783,15 +1783,23 @@ export function ImageAnnotationDialog({
 
   // ── Canvas coordinate helper ─────────────────────────────────────────────────
 
-  function canvasCoords(e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } {
+  function canvasCoords(
+    e: { clientX: number; clientY: number },
+    /** When true, clamp the result to [0, canvas.width] × [0, canvas.height].
+     *  Used during crop drags so outside-canvas movement snaps to the edge. */
+    clamp = false,
+  ): { x: number; y: number } {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-    };
+    let x = (e.clientX - rect.left) * scaleX;
+    let y = (e.clientY - rect.top)  * scaleY;
+    if (clamp) {
+      x = Math.max(0, Math.min(canvas.width,  x));
+      y = Math.max(0, Math.min(canvas.height, y));
+    }
+    return { x, y };
   }
 
   // ── Pointer handlers ─────────────────────────────────────────────────────────
@@ -1872,7 +1880,7 @@ export function ImageAnnotationDialog({
     return v;
   }
 
-  function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
+  function handleMouseDown(e: React.PointerEvent<HTMLCanvasElement>) {
     if (textInput) return; // text input in progress
     // Space-pan: record scroll anchor, skip annotation logic
     if (spacePanningRef.current) {
@@ -1957,10 +1965,12 @@ export function ImageAnnotationDialog({
         const hit = hitTestCropRect(cropX, cropY, cropRect);
         if (hit === "move") {
           cropDragRef.current = { kind: "move", startX: cropX, startY: cropY, origRect: { ...cropRect } };
+          e.currentTarget.setPointerCapture(e.pointerId);
           return;
         }
         if (hit) {
           cropDragRef.current = { kind: "resize", handle: hit, startX: cropX, startY: cropY, origRect: { ...cropRect } };
+          e.currentTarget.setPointerCapture(e.pointerId);
           return;
         }
       }
@@ -1973,6 +1983,9 @@ export function ImageAnnotationDialog({
       }
       cropDragRef.current = { kind: "draw", startX: sx, startY: sy };
       setCropRect({ x1: sx, y1: sy, x2: sx, y2: sy });
+      // Capture the pointer so pointermove / pointerup keep firing even when
+      // the cursor leaves the canvas element (allows dragging to the exact edge).
+      e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
 
@@ -1980,7 +1993,7 @@ export function ImageAnnotationDialog({
     dragRef.current = { kind: "draw", startX: x, startY: y };
   }
 
-  function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
+  function handleMouseMove(e: React.PointerEvent<HTMLCanvasElement>) {
     // Space-pan: update scroll position
     if (panDragRef.current) {
       const vp = viewportRef.current;
@@ -1991,7 +2004,10 @@ export function ImageAnnotationDialog({
       return;
     }
 
-    const { x, y } = canvasCoords(e);
+    // Clamp to canvas bounds during an active crop drag so the handle
+    // snaps to the edge when the pointer moves outside the canvas element.
+    const isCropDragging = tool === "crop" && !!cropDragRef.current;
+    const { x, y } = canvasCoords(e, isCropDragging);
 
     // Update hover state for cursor (only when not dragging)
     if (!dragRef.current && tool === "select") {
@@ -2366,7 +2382,7 @@ export function ImageAnnotationDialog({
     }
   }
 
-  function handleMouseUp(e: React.MouseEvent<HTMLCanvasElement>) {
+  function handleMouseUp(e: React.PointerEvent<HTMLCanvasElement>) {
     if (panDragRef.current) { panDragRef.current = null; return; }
     // Crop tool uses its own ref — handle BEFORE the dragRef guard
     if (tool === "crop" && cropDragRef.current) {
@@ -3651,10 +3667,10 @@ export function ImageAnnotationDialog({
                   height: imgRef.current ? Math.round((imgRef.current.naturalHeight + canvasOffsetY + canvasPaddingBottom) * 1.5 * zoom) : undefined,
                   imageRendering: "auto",
                 }}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseLeave}
+                onPointerDown={handleMouseDown}
+                onPointerMove={handleMouseMove}
+                onPointerUp={handleMouseUp}
+                onPointerLeave={handleMouseLeave}
                 onDoubleClick={handleDoubleClick}
               />
               {/* Text input overlay */}
